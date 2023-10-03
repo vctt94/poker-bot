@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"vctt94/poker-bot/bot"
 
 	"github.com/companyzero/bisonrelay/clientrpc/types"
@@ -14,8 +16,7 @@ import (
 )
 
 const (
-	networkBR     uint16 = 1
-	networkMatrix uint16 = 2
+	networkBR uint16 = 1
 )
 
 func realMain() error {
@@ -67,6 +68,11 @@ func realMain() error {
 		return err
 	}
 
+	onGoingGames := make(map[string]*PokerGame)
+	onGoingGamesMtx := make(map[string]*sync.Mutex)
+	// expectedPayments := make(map[string]float64)
+	var botId string
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -83,16 +89,117 @@ func realMain() error {
 					continue
 				}
 				gcidstr := hex.EncodeToString(gcm.Uid[:])
-				msg := fmt.Sprintf("[m] <%v> %v", gcm.Nick, gcm.Msg)
-				if err := bot.SendGC(ctx, gcidstr, msg); err != nil {
-					gcLog.Errorf("failed to send msg to gc %v: %v", gcidstr, err)
+				msg := gcm.Msg.Message
+				if strings.HasPrefix(msg, "!start") {
+					game := &PokerGame{}
+					var botReply string
+
+					info, err := bot.Info(ctx, "")
+					if err != nil {
+						log.Warnf("err: %v", err)
+						continue
+					}
+					botId = info.Uid
+					gc, err := bot.GetGC(ctx, gcidstr)
+					if err != nil {
+						log.Warnf("err: %v", err)
+						continue
+					}
+
+					if gc.NbMembers < 3 {
+						botReply = "minimum 2 players to start game"
+						err = bot.SendGC(ctx, gcidstr, msg)
+						if err != nil {
+							log.Warnf("not possible to send message: %s", err)
+							continue
+						}
+						continue
+					}
+					onGoingGamesMtx[gcidstr].Lock()
+
+					players := make([]Player, gc.NbMembers)
+					for i, member := range info.Members {
+
+						// deactivate bot
+						if member == botId {
+							players[i] = Player{
+								ID:       member,
+								IsActive: false,
+							}
+							continue
+						}
+						resp, err := bot.Info(ctx, member)
+						if err != nil {
+							log.Warnf("not possible to chat.Info: %s", err)
+							continue
+						}
+						players[i] = Player{
+							ID:       member,
+							Nick:     resp.Nick,
+							Hand:     []Card{},
+							IsActive: true,
+							HasActed: false,
+						}
+
+					}
+					game = New(gcidstr, players, 0, 0.005, 0.01)
+					game.ShuffleDeck()
+
+					// blinds need to be paid
+					game.Players[game.BigBlind].HasActed = false
+					game.Players[game.SmallBlind].HasActed = false
+
+					// draw cards
+					for i := range players {
+						if !players[i].IsActive {
+							continue
+						}
+						players[i].Hand = []Card{game.Draw(), game.Draw()}
+						err = bot.SendPM(ctx, players[i].ID, fmt.Sprintf("Hand: %v\n"+
+							"___________________________________", players[i].Hand))
+						if err != nil {
+							log.Warnf("Err: %v", err)
+						}
+					}
+					onGoingGames[gcidstr] = game
+					onGoingGamesMtx[gcidstr].Unlock()
+
+					botReply = fmt.Sprintf("\n---------------\n"+
+						"Current Stage: %s\n"+
+						"Community Cards: %v\n"+
+						"Pot: %f\n"+
+						"---------------|\n"+
+						fmt.Sprintf("Waiting for:\nBB: %f from %s\nSB: %f from %s\n", game.BB, game.Players[game.BigBlind].Nick, game.SB, game.Players[game.SmallBlind].Nick)+
+						"Current Player: %s\n",
+
+						game.CurrentStage, game.CommunityCards, game.Pot, game.Players[game.CurrentPlayer].Nick)
+
+					if err != nil {
+						log.Warnf("Err: %v", err)
+						continue
+					}
+					err = bot.SendGC(ctx, gcidstr, botReply)
+					if err != nil {
+						log.Warnf("Err: %v", err)
+						continue
+					}
+					// game started can continue.
+					continue
 				}
+
+				// if exists {
+				// 	// This is a message related to an ongoing game. Handle accordingly.
+				// 	// For example, update the game's state based on the message.
+				// } else {
+				// 	// This is an unrelated message.
+				// }
 			case p := <-pChan:
 				nick := escapeNick(p.Nick)
 				if p.AmountMatoms == 0 {
 					gcLog.Tracef("empty tip from %v", nick)
 					continue
 				}
+				// xxx
 				// how to know it is a payment from a game?
 
 			}

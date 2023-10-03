@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -10,6 +11,12 @@ import (
 	"github.com/companyzero/bisonrelay/zkidentity"
 	"github.com/decred/dcrd/dcrutil/v4"
 )
+
+type Info struct {
+	Uid     string
+	Members []string
+	Nick    string
+}
 
 func (b *Bot) GetGCs(ctx context.Context) ([]*types.ListGCsResponse_GCInfo, error) {
 	var req types.ListGCsRequest
@@ -21,6 +28,27 @@ func (b *Bot) GetGCs(ctx context.Context) ([]*types.ListGCsResponse_GCInfo, erro
 	sort.Sort(GCs(rep.Gcs))
 
 	return rep.Gcs, nil
+}
+
+func (b *Bot) GetGC(ctx context.Context, uid string) (*types.ListGCsResponse_GCInfo, error) {
+	gcs, err := b.GetGCs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, gc := range gcs {
+		gcid := hex.EncodeToString(gc.Id)
+		if gcid == uid {
+			return gc, nil
+		}
+	}
+	return &types.ListGCsResponse_GCInfo{}, nil
+}
+
+func (b *Bot) Info(ctx context.Context, uid string) (*Info, error) {
+	return &Info{
+		Uid:     "bot uid",
+		Members: []string{"", ""},
+	}, nil
 }
 
 func (b *Bot) SendFile(ctx context.Context, uid, filename string) error {
